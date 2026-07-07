@@ -17,7 +17,7 @@ CANVAS_ACCESS_TOKEN = os.getenv("CANVAS_ACCESS_TOKEN")
 QRESERVE_BOT_TOKEN = os.getenv("QRESERVE_BOT_TOKEN")
 QRESERVE_USER_LOOKUP_URL = os.getenv("QRESERVE_USER_LOOKUP_URL")
 
-LOOKBACK_DAYS = int(os.getenv("LOOKBACK_DAYS", "2"))
+LOOKBACK_DAYS = int(os.getenv("LOOKBACK_DAYS", "7"))
 
 
 def require_env(value, name):
