@@ -16,7 +16,7 @@ QRESERVE_CREDENTIAL_IDS = [
 CANVAS_ACCESS_TOKEN = os.getenv("CANVAS_ACCESS_TOKEN")
 QRESERVE_BOT_TOKEN = os.getenv("QRESERVE_BOT_TOKEN")
 
-LOOKBACK_MINUTES = int(os.getenv("LOOKBACK_MINUTES", "7"))
+LOOKBACK_MINUTES = int(os.getenv("LOOKBACK_MINUTES", "100"))
 
 
 def require_env(value, name):
