@@ -18,7 +18,7 @@ QRESERVE_BOT_TOKEN = os.getenv("QRESERVE_BOT_TOKEN")
 # The public docs confirm the lookup behavior, but I did not verify the exact REST path.
 QRESERVE_USER_LOOKUP_URL = os.getenv("QRESERVE_USER_LOOKUP_URL")
 
-LOOKBACK_MINUTES = int(os.getenv("LOOKBACK_MINUTES", "15"))
+LOOKBACK_MINUTES = int(os.getenv("LOOKBACK_MINUTES", "30"))
 
 
 def require_env(value, name):
