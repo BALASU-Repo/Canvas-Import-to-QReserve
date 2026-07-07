@@ -2,7 +2,7 @@ name: Canvas QReserve Sync
 
 on:
   schedule:
-    - cron: '7 * * * *'
+    - cron: '43 * * * *'
   workflow_dispatch:
 
 jobs:
