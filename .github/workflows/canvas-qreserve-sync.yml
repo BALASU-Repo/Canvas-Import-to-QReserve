@@ -1,4 +1,4 @@
-name: Canvas Import to QReserve
+name: Canvas QReserve Sync
 
 on:
   workflow_dispatch:
@@ -6,17 +6,21 @@ on:
 jobs:
   sync:
     runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
 
-      - uses: actions/setup-python@v5
+    steps:
+      - name: Check out repo
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
         with:
-          python-version: "3.11"
+          python-version: "3.12"
 
       - name: Install dependencies
-        run: |
-          python -m pip install --upgrade pip
-          pip install -r requirements.txt
+        run: pip install requests
 
       - name: Run sync
         run: python canvas_qreserve_sync.py
+        env:
+          CANVAS_ACCESS_TOKEN: ${{ secrets.CANVAS_ACCESS_TOKEN }}
+          QRESERVE_BOT_TOKEN: ${{ secrets.QRESERVE_BOT_TOKEN }}
