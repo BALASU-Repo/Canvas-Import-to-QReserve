@@ -7,18 +7,17 @@ COURSE_ID = "252864"
 QUIZ_ID = "1989166"
 
 QRESERVE_SITE_ID = "qrmfmhjzfgyi33n551936oiq0n0pgfwkmnjg4"
-QRESERVE_CREDENTIAL_ID = "nv78xb4w5snaism4fvvay7meefmgxi418t3yl"
-QRESERVE_CREDENTIAL_ID2 = "bv5tne89bsrctvvjta540btuipvpmlkow2qdy"
-QRESERVE_CREDENTIAL_ID3 = "5dsyhhp7g4ev5b8x0ya5esyn4ahv7gal6inu5"
+QRESERVE_CREDENTIAL_IDS = [
+    "nv78xb4w5snaism4fvvay7meefmgxi418t3yl",
+    "bv5tne89bsrctvvjta540btuipvpmlkow2qdy",
+    "5dsyhhp7g4ev5b8x0ya5esyn4ahv7gal6inu5",
+]
 
 CANVAS_ACCESS_TOKEN = os.getenv("CANVAS_ACCESS_TOKEN")
 QRESERVE_BOT_TOKEN = os.getenv("QRESERVE_BOT_TOKEN")
-
-# Set this to the QReserve email lookup endpoint your site exposes.
-# The public docs confirm the lookup behavior, but I did not verify the exact REST path.
 QRESERVE_USER_LOOKUP_URL = os.getenv("QRESERVE_USER_LOOKUP_URL")
 
-LOOKBACK_MINUTES = int(os.getenv("LOOKBACK_MINUTES", "30"))
+LOOKBACK_DAYS = int(os.getenv("LOOKBACK_DAYS", "2"))
 
 
 def require_env(value, name):
@@ -64,7 +63,6 @@ def load_canvas_email_lookup(canvas_headers):
         user = enroll.get("user", {}) or {}
         user_id = str(enroll.get("user_id"))
 
-        # Canvas sometimes gives us the ASURITE login_id directly, and sometimes only email.
         login_id = (user.get("login_id") or "").strip().lower()
         email = (user.get("email") or "").strip().lower()
 
@@ -106,22 +104,9 @@ def get_qreserve_user_id_from_email(student_email, qreserve_headers, cache):
     raise LookupError(f"Could not resolve QReserve user for {student_email}")
 
 
-def award_qreserve_credential(qreserve_user_id, qreserve_headers):
-    qreserve_url = f"https://api.qreserve.com/training/record_add/{QRESERVE_CREDENTIAL_ID}"
-
-    payload = {
-        "user_id": qreserve_user_id,
-        "earned_on": datetime.now().strftime("%Y-%m-%d"),
-        "silent": False,
-        "return_data": True,
-    }
-
-    res = requests.post(qreserve_url, json=payload, headers=qreserve_headers, timeout=30)
-
-    if res.status_code in (200, 201):
-        print(f"       SUCCESS: Granted orientation to QReserve user {qreserve_user_id}!")
-        
-        qreserve_url = f"https://api.qreserve.com/training/record_add/{QRESERVE_CREDENTIAL_ID2}"
+def award_qreserve_credentials(qreserve_user_id, qreserve_headers):
+    for credential_id in QRESERVE_CREDENTIAL_IDS:
+        qreserve_url = f"https://api.qreserve.com/training/record_add/{credential_id}"
 
         payload = {
             "user_id": qreserve_user_id,
@@ -132,32 +117,13 @@ def award_qreserve_credential(qreserve_user_id, qreserve_headers):
 
         res = requests.post(qreserve_url, json=payload, headers=qreserve_headers, timeout=30)
 
-        if res.status_code in (200, 201):
-            print(f"       SUCCESS: Granted orientation to QReserve user {qreserve_user_id}!")
-            
-            qreserve_url = f"https://api.qreserve.com/training/record_add/{QRESERVE_CREDENTIAL_ID3}"
-
-            payload = {
-                "user_id": qreserve_user_id,
-                "earned_on": datetime.now().strftime("%Y-%m-%d"),
-                "silent": False,
-                "return_data": True,
-            }
-
-            res = requests.post(qreserve_url, json=payload, headers=qreserve_headers, timeout=30)
-
-            if res.status_code in (200, 201):
-                print(f"       SUCCESS: Granted orientation to QReserve user {qreserve_user_id}!")
-                return True
-
+        if res.status_code not in (200, 201):
             print(f"       FAILURE: {res.status_code} {res.text[:200]}")
             return False
 
-        print(f"       FAILURE: {res.status_code} {res.text[:200]}")
-        return False
+        print(f"       SUCCESS: Granted credential {credential_id} to QReserve user {qreserve_user_id}!")
 
-    print(f"       FAILURE: {res.status_code} {res.text[:200]}")
-    return False
+    return True
 
 
 def run_sync_pipeline():
@@ -190,7 +156,7 @@ def run_sync_pipeline():
 
     canvas_email_lookup = {}
     qreserve_user_cache = {}
-    time_window = datetime.now(timezone.utc) - timedelta(days=LOOKBACK_MINUTES)
+    time_window = datetime.now(timezone.utc) - timedelta(days=LOOKBACK_DAYS)
 
     processed_count = 0
 
@@ -246,7 +212,7 @@ def run_sync_pipeline():
             print(f"       ERROR: Could not resolve QReserve user for {student_email}. Details: {e}")
             continue
 
-        if award_qreserve_credential(qreserve_user_id, qreserve_headers):
+        if award_qreserve_credentials(qreserve_user_id, qreserve_headers):
             processed_count += 1
 
     print(f"Sync complete. Processed {processed_count} passing submissions.")
