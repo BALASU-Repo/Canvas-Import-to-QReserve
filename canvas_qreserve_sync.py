@@ -8,6 +8,8 @@ QUIZ_ID = "1989166"
 
 QRESERVE_SITE_ID = "qrmfmhjzfgyi33n551936oiq0n0pgfwkmnjg4"
 QRESERVE_CREDENTIAL_ID = "nv78xb4w5snaism4fvvay7meefmgxi418t3yl"
+QRESERVE_CREDENTIAL_ID2 = "bv5tne89bsrctvvjta540btuipvpmlkow2qdy"
+QRESERVE_CREDENTIAL_ID3 = "5dsyhhp7g4ev5b8x0ya5esyn4ahv7gal6inu5"
 
 CANVAS_ACCESS_TOKEN = os.getenv("CANVAS_ACCESS_TOKEN")
 QRESERVE_BOT_TOKEN = os.getenv("QRESERVE_BOT_TOKEN")
@@ -16,7 +18,7 @@ QRESERVE_BOT_TOKEN = os.getenv("QRESERVE_BOT_TOKEN")
 # The public docs confirm the lookup behavior, but I did not verify the exact REST path.
 QRESERVE_USER_LOOKUP_URL = os.getenv("QRESERVE_USER_LOOKUP_URL")
 
-LOOKBACK_MINUTES = int(os.getenv("LOOKBACK_MINUTES", "100"))
+LOOKBACK_MINUTES = int(os.getenv("LOOKBACK_MINUTES", "2"))
 
 
 def require_env(value, name):
@@ -118,7 +120,41 @@ def award_qreserve_credential(qreserve_user_id, qreserve_headers):
 
     if res.status_code in (200, 201):
         print(f"       SUCCESS: Granted orientation to QReserve user {qreserve_user_id}!")
-        return True
+        
+        qreserve_url = f"https://api.qreserve.com/training/record_add/{QRESERVE_CREDENTIAL_ID2}"
+
+        payload = {
+            "user_id": qreserve_user_id,
+            "earned_on": datetime.now().strftime("%Y-%m-%d"),
+            "silent": False,
+            "return_data": True,
+        }
+
+        res = requests.post(qreserve_url, json=payload, headers=qreserve_headers, timeout=30)
+
+        if res.status_code in (200, 201):
+            print(f"       SUCCESS: Granted orientation to QReserve user {qreserve_user_id}!")
+            
+            qreserve_url = f"https://api.qreserve.com/training/record_add/{QRESERVE_CREDENTIAL_ID3}"
+
+            payload = {
+                "user_id": qreserve_user_id,
+                "earned_on": datetime.now().strftime("%Y-%m-%d"),
+                "silent": False,
+                "return_data": True,
+            }
+
+            res = requests.post(qreserve_url, json=payload, headers=qreserve_headers, timeout=30)
+
+            if res.status_code in (200, 201):
+                print(f"       SUCCESS: Granted orientation to QReserve user {qreserve_user_id}!")
+                return True
+
+            print(f"       FAILURE: {res.status_code} {res.text[:200]}")
+            return False
+
+        print(f"       FAILURE: {res.status_code} {res.text[:200]}")
+        return False
 
     print(f"       FAILURE: {res.status_code} {res.text[:200]}")
     return False
@@ -154,7 +190,7 @@ def run_sync_pipeline():
 
     canvas_email_lookup = {}
     qreserve_user_cache = {}
-    time_window = datetime.now(timezone.utc) - timedelta(minutes=LOOKBACK_MINUTES)
+    time_window = datetime.now(timezone.utc) - timedelta(days=LOOKBACK_MINUTES)
 
     processed_count = 0
 
