@@ -15,9 +15,8 @@ QRESERVE_CREDENTIAL_IDS = [
 
 CANVAS_ACCESS_TOKEN = os.getenv("CANVAS_ACCESS_TOKEN")
 QRESERVE_BOT_TOKEN = os.getenv("QRESERVE_BOT_TOKEN")
-QRESERVE_USER_LOOKUP_URL = os.getenv("QRESERVE_USER_LOOKUP_URL")
 
-LOOKBACK_DAYS = int(os.getenv("LOOKBACK_DAYS", "7"))
+LOOKBACK_DAYS = int(os.getenv("LOOKBACK_DAYS", "2"))
 
 
 def require_env(value, name):
@@ -74,34 +73,35 @@ def load_canvas_email_lookup(canvas_headers):
     return email_lookup
 
 
-def get_qreserve_user_id_from_email(student_email, qreserve_headers, cache):
-    key = student_email.strip().lower()
-    if key in cache:
-        return cache[key]
-
-    if not QRESERVE_USER_LOOKUP_URL:
-        raise RuntimeError("Missing required environment variable: QRESERVE_USER_LOOKUP_URL")
-
-    res = requests.get(
-        QRESERVE_USER_LOOKUP_URL,
-        headers=qreserve_headers,
-        params={
-            "email": key,
-            "include_unverified": "true",
-        },
-        timeout=30,
-    )
+def get_qreserve_user_map(site_id, headers):
+    url = f"https://api.qreserve.com/sites/{site_id}/users"
+    res = requests.get(url, headers=headers, timeout=30)
     res.raise_for_status()
+
     payload = res.json()
+    if isinstance(payload, dict):
+        users = payload.get("data") or payload.get("users") or payload.get("site_users") or []
+    elif isinstance(payload, list):
+        users = payload
+    else:
+        users = []
 
-    data = payload.get("data", payload) if isinstance(payload, dict) else payload
-    if isinstance(data, dict):
-        user_id = data.get("user_id")
-        if user_id:
-            cache[key] = user_id
-            return user_id
+    email_to_user_id = {}
+    for site_user in users:
+        if not isinstance(site_user, dict):
+            continue
 
-    raise LookupError(f"Could not resolve QReserve user for {student_email}")
+        user = site_user.get("user", site_user)
+        if not isinstance(user, dict):
+            continue
+
+        email = (user.get("email") or "").strip().lower()
+        user_id = user.get("user_id") or user.get("id")
+
+        if email and user_id:
+            email_to_user_id[email] = user_id
+
+    return email_to_user_id
 
 
 def award_qreserve_credentials(qreserve_user_id, qreserve_headers):
@@ -138,6 +138,13 @@ def run_sync_pipeline():
         "Content-Type": "application/json",
     }
 
+    try:
+        qreserve_user_map = get_qreserve_user_map(QRESERVE_SITE_ID, qreserve_headers)
+        print(f"DEBUG: QReserve map contains {len(qreserve_user_map)} users.")
+    except Exception as e:
+        print(f"CRITICAL: Could not fetch QReserve user map. Details: {e}")
+        return
+
     submission_url = f"{CANVAS_BASE_URL}/courses/{COURSE_ID}/quizzes/{QUIZ_ID}/submissions"
     submission_params = [("per_page", 100), ("include[]", "user")]
 
@@ -155,7 +162,6 @@ def run_sync_pipeline():
     print(f"DEBUG: Found {len(submissions)} raw submissions in Canvas payload.")
 
     canvas_email_lookup = {}
-    qreserve_user_cache = {}
     time_window = datetime.now(timezone.utc) - timedelta(days=LOOKBACK_DAYS)
 
     processed_count = 0
@@ -202,14 +208,9 @@ def run_sync_pipeline():
 
         print(f"    ↳ MATCH FOUND: Pushing {student_email} to QReserve.")
 
-        try:
-            qreserve_user_id = get_qreserve_user_id_from_email(
-                student_email,
-                qreserve_headers,
-                qreserve_user_cache,
-            )
-        except Exception as e:
-            print(f"       ERROR: Could not resolve QReserve user for {student_email}. Details: {e}")
+        qreserve_user_id = qreserve_user_map.get(student_email.lower())
+        if not qreserve_user_id:
+            print(f"       ERROR: {student_email} not found in QReserve site users.")
             continue
 
         if award_qreserve_credentials(qreserve_user_id, qreserve_headers):
