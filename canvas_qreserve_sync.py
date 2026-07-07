@@ -12,9 +12,12 @@ QRESERVE_CREDENTIAL_ID = "nv78xb4w5snaism4fvvay7meefmgxi418t3yl"
 CANVAS_ACCESS_TOKEN = os.getenv("CANVAS_ACCESS_TOKEN")
 QRESERVE_BOT_TOKEN = os.getenv("QRESERVE_BOT_TOKEN")
 
-print("=" * 60)
-print(f"Started at {datetime.now()}")
-print("=" * 60)
+# Set this to the QReserve email lookup endpoint your site exposes.
+# The public docs confirm the lookup behavior, but I did not verify the exact REST path.
+QRESERVE_USER_LOOKUP_URL = os.getenv("QRESERVE_USER_LOOKUP_URL")
+
+LOOKBACK_MINUTES = int(os.getenv("LOOKBACK_MINUTES", "100"))
+
 
 def require_env(value, name):
     if not value:
@@ -26,7 +29,7 @@ def get_canvas_collection(url, headers, params=None, collection_key=None):
     items = []
 
     while url:
-        res = requests.get(url, headers=headers, params=params)
+        res = requests.get(url, headers=headers, params=params, timeout=30)
         res.raise_for_status()
         payload = res.json()
 
@@ -43,23 +46,62 @@ def get_canvas_collection(url, headers, params=None, collection_key=None):
     return items
 
 
-def get_qreserve_user_map(site_id, headers):
-    url = f"https://api.qreserve.com/sites/{site_id}/users"
-    res = requests.get(url, headers=headers)
-    res.raise_for_status()
+def load_canvas_email_lookup(canvas_headers):
+    enrollment_url = f"{CANVAS_BASE_URL}/courses/{COURSE_ID}/enrollments"
+    enrollment_params = [("per_page", 100), ("type[]", "StudentEnrollment")]
 
-    payload = res.json()
-    users = payload.get("data", []) if isinstance(payload, dict) else payload
+    email_lookup = {}
+    enrollments = get_canvas_collection(
+        enrollment_url,
+        canvas_headers,
+        params=enrollment_params,
+        collection_key=None,
+    )
 
-    email_to_user_id = {}
-    for site_user in users:
-        user = site_user.get("user", {})
+    for enroll in enrollments:
+        user = enroll.get("user", {}) or {}
+        user_id = str(enroll.get("user_id"))
+
+        # Canvas sometimes gives us the ASURITE login_id directly, and sometimes only email.
+        login_id = (user.get("login_id") or "").strip().lower()
         email = (user.get("email") or "").strip().lower()
-        user_id = user.get("user_id")
-        if email and user_id:
-            email_to_user_id[email] = user_id
 
-    return email_to_user_id
+        if login_id:
+            email_lookup[user_id] = f"{login_id}@asu.edu"
+        elif email:
+            email_lookup[user_id] = email
+
+    return email_lookup
+
+
+def get_qreserve_user_id_from_email(student_email, qreserve_headers, cache):
+    key = student_email.strip().lower()
+    if key in cache:
+        return cache[key]
+
+    if not QRESERVE_USER_LOOKUP_URL:
+        raise RuntimeError("Missing required environment variable: QRESERVE_USER_LOOKUP_URL")
+
+    res = requests.get(
+        QRESERVE_USER_LOOKUP_URL,
+        headers=qreserve_headers,
+        params={
+            "email": key,
+            "include_unverified": "true",
+        },
+        timeout=30,
+    )
+    res.raise_for_status()
+    payload = res.json()
+
+    data = payload.get("data", payload) if isinstance(payload, dict) else payload
+    if isinstance(data, dict):
+        user_id = data.get("user_id")
+        if user_id:
+            cache[key] = user_id
+            return user_id
+
+    raise LookupError(f"Could not resolve QReserve user for {student_email}")
 
 
 def award_qreserve_credential(qreserve_user_id, qreserve_headers):
@@ -72,7 +114,7 @@ def award_qreserve_credential(qreserve_user_id, qreserve_headers):
         "return_data": True,
     }
 
-    res = requests.post(qreserve_url, json=payload, headers=qreserve_headers)
+    res = requests.post(qreserve_url, json=payload, headers=qreserve_headers, timeout=30)
 
     if res.status_code in (200, 201):
         print(f"       SUCCESS: Granted orientation to QReserve user {qreserve_user_id}!")
@@ -94,41 +136,14 @@ def run_sync_pipeline():
         "Content-Type": "application/json",
     }
 
-    enrollment_url = f"{CANVAS_BASE_URL}/courses/{COURSE_ID}/enrollments"
-    enrollment_params = {"per_page": 100, "type[]": "StudentEnrollment"}
-
-    email_lookup = {}
-    try:
-        enrollments = get_canvas_collection(
-            enrollment_url,
-            canvas_headers,
-            params=enrollment_params,
-            collection_key=None,
-        )
-
-        for enroll in enrollments:
-            user = enroll.get("user", {})
-            user_id = str(enroll.get("user_id"))
-            asurite = user.get("login_id")
-            if asurite:
-                email_lookup[user_id] = f"{asurite.strip()}@asu.edu"
-    except Exception as e:
-        print(f"WARNING: Could not fetch roster mapping. Details: {e}")
-
-    try:
-        qreserve_user_map = get_qreserve_user_map(QRESERVE_SITE_ID, qreserve_headers)
-        print(f"DEBUG: QReserve map contains {len(qreserve_user_map)} users.")
-    except Exception as e:
-        print(f"WARNING: Could not fetch QReserve user map. Details: {e}")
-        qreserve_user_map = {}
-
-    canvas_url = f"{CANVAS_BASE_URL}/courses/{COURSE_ID}/quizzes/{QUIZ_ID}/submissions"
+    submission_url = f"{CANVAS_BASE_URL}/courses/{COURSE_ID}/quizzes/{QUIZ_ID}/submissions"
+    submission_params = [("per_page", 100), ("include[]", "user")]
 
     try:
         submissions = get_canvas_collection(
-            canvas_url,
+            submission_url,
             canvas_headers,
-            params={"per_page": 100},
+            params=submission_params,
             collection_key="quiz_submissions",
         )
     except Exception as e:
@@ -136,9 +151,11 @@ def run_sync_pipeline():
         return
 
     print(f"DEBUG: Found {len(submissions)} raw submissions in Canvas payload.")
-    print(f"DEBUG: Roster map contains {len(email_lookup)} translated ASURITE accounts.")
 
-    time_window = datetime.now(timezone.utc) - timedelta(minutes=100)
+    canvas_email_lookup = {}
+    qreserve_user_cache = {}
+    time_window = datetime.now(timezone.utc) - timedelta(minutes=LOOKBACK_MINUTES)
+
     processed_count = 0
 
     for sub in submissions:
@@ -159,16 +176,38 @@ def run_sync_pipeline():
         if finished_at <= time_window:
             continue
 
-        student_email = email_lookup.get(user_id)
+        user_obj = sub.get("user", {}) or {}
+        student_email = (user_obj.get("email") or "").strip().lower()
+
         if not student_email:
-            print(f"    ↳ ERROR: ASURITE login_id missing from enrollment roster for user {user_id}.")
+            login_id = (user_obj.get("login_id") or "").strip().lower()
+            if login_id:
+                student_email = f"{login_id}@asu.edu"
+
+        if not student_email:
+            if not canvas_email_lookup:
+                try:
+                    canvas_email_lookup = load_canvas_email_lookup(canvas_headers)
+                except Exception as e:
+                    print(f"WARNING: Could not fetch Canvas roster mapping. Details: {e}")
+                    continue
+
+            student_email = canvas_email_lookup.get(user_id, "")
+
+        if not student_email:
+            print(f"    ↳ ERROR: Could not resolve email for Canvas user {user_id}.")
             continue
 
         print(f"    ↳ MATCH FOUND: Pushing {student_email} to QReserve.")
 
-        qreserve_user_id = qreserve_user_map.get(student_email.lower())
-        if not qreserve_user_id:
-            print(f"       ERROR: {student_email} not found in QReserve site users.")
+        try:
+            qreserve_user_id = get_qreserve_user_id_from_email(
+                student_email,
+                qreserve_headers,
+                qreserve_user_cache,
+            )
+        except Exception as e:
+            print(f"       ERROR: Could not resolve QReserve user for {student_email}. Details: {e}")
             continue
 
         if award_qreserve_credential(qreserve_user_id, qreserve_headers):
@@ -179,8 +218,3 @@ def run_sync_pipeline():
 
 if __name__ == "__main__":
     run_sync_pipeline()
-
-print("=" * 60)
-print("Orientation sync complete.")
-print(f"Credentials granted: {processed_count}")
-print("=" * 60)
