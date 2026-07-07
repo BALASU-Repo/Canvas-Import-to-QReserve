@@ -12,6 +12,10 @@ QRESERVE_CREDENTIAL_ID = "nv78xb4w5snaism4fvvay7meefmgxi418t3yl"
 CANVAS_ACCESS_TOKEN = os.getenv("CANVAS_ACCESS_TOKEN")
 QRESERVE_BOT_TOKEN = os.getenv("QRESERVE_BOT_TOKEN")
 
+print("=" * 60)
+print(f"Started at {datetime.now()}")
+print("=" * 60)
+
 def require_env(value, name):
     if not value:
         raise RuntimeError(f"Missing required environment variable: {name}")
@@ -175,3 +179,8 @@ def run_sync_pipeline():
 
 if __name__ == "__main__":
     run_sync_pipeline()
+
+print("=" * 60)
+print("Orientation sync complete.")
+print(f"Credentials granted: {processed_count}")
+print("=" * 60)
