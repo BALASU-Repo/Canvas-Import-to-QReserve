@@ -16,7 +16,7 @@ QRESERVE_CREDENTIAL_IDS = [
 CANVAS_ACCESS_TOKEN = os.getenv("CANVAS_ACCESS_TOKEN")
 QRESERVE_BOT_TOKEN = os.getenv("QRESERVE_BOT_TOKEN")
 
-LOOKBACK_DAYS = int(os.getenv("LOOKBACK_DAYS", "7"))
+LOOKBACK_MINUTES = int(os.getenv("LOOKBACK_MINUTES", "7"))
 
 
 def require_env(value, name):
@@ -162,7 +162,7 @@ def run_sync_pipeline():
     print(f"DEBUG: Found {len(submissions)} raw submissions in Canvas payload.")
 
     canvas_email_lookup = {}
-    time_window = datetime.now(timezone.utc) - timedelta(days=LOOKBACK_DAYS)
+    time_window = datetime.now(timezone.utc) - timedelta(minutes=LOOKBACK_MINUTES)
 
     processed_count = 0
 
