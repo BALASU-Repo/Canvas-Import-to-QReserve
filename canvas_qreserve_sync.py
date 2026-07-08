@@ -3,6 +3,8 @@ import requests
 from datetime import datetime, timedelta, timezone
 
 CANVAS_BASE_URL = "https://canvas.asu.edu/api/v1/"
+
+#======================= Safer Seas =======================
 COURSE_ID = "252864"
 QUIZ_ID = "1989166"
 
@@ -12,6 +14,7 @@ QRESERVE_CREDENTIAL_IDS = [
     "bv5tne89bsrctvvjta540btuipvpmlkow2qdy",
     "5dsyhhp7g4ev5b8x0ya5esyn4ahv7gal6inu5",
 ]
+#======================= Safer Seas =======================
 
 CANVAS_ACCESS_TOKEN = os.getenv("CANVAS_ACCESS_TOKEN")
 QRESERVE_BOT_TOKEN = os.getenv("QRESERVE_BOT_TOKEN")
