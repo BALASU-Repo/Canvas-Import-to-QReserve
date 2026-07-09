@@ -1,4 +1,5 @@
 import os
+import re
 import requests
 from datetime import datetime, timedelta, timezone
 
@@ -49,6 +50,60 @@ def get_canvas_collection(url, headers, params=None, collection_key=None):
     return items
 
 
+def normalize_name(value):
+    value = (value or "").strip().lower()
+    value = re.sub(r"[^a-z0-9]+", " ", value)
+    return re.sub(r"\s+", " ", value).strip()
+
+
+def extract_first_last_from_text(name_text):
+    name_text = (name_text or "").strip()
+    if not name_text:
+        return "", ""
+
+    if "," in name_text:
+        last, rest = name_text.split(",", 1)
+        first = rest.strip().split()[0] if rest.strip() else ""
+        return first, last.strip()
+
+    parts = name_text.split()
+    if len(parts) == 1:
+        return parts[0], ""
+
+    return parts[0], parts[-1]
+
+
+def extract_first_last(user_obj):
+    if not isinstance(user_obj, dict):
+        return "", ""
+
+    first = (
+        user_obj.get("first_name")
+        or user_obj.get("given_name")
+        or user_obj.get("first")
+        or ""
+    ).strip()
+    last = (
+        user_obj.get("last_name")
+        or user_obj.get("family_name")
+        or user_obj.get("surname")
+        or user_obj.get("last")
+        or ""
+    ).strip()
+
+    if first and last:
+        return first, last
+
+    for field in ("sortable_name", "name", "full_name", "display_name"):
+        candidate = (user_obj.get(field) or "").strip()
+        if candidate:
+            parsed_first, parsed_last = extract_first_last_from_text(candidate)
+            if parsed_first and parsed_last:
+                return parsed_first, parsed_last
+
+    return first, last
+
+
 def load_canvas_email_lookup(canvas_headers):
     enrollment_url = f"{CANVAS_BASE_URL}/courses/{COURSE_ID}/enrollments"
     enrollment_params = [("per_page", 100), ("type[]", "StudentEnrollment")]
@@ -76,7 +131,7 @@ def load_canvas_email_lookup(canvas_headers):
     return email_lookup
 
 
-def get_qreserve_user_map(site_id, headers):
+def get_qreserve_user_maps(site_id, headers):
     url = f"https://api.qreserve.com/sites/{site_id}/users"
     res = requests.get(url, headers=headers, timeout=30)
     res.raise_for_status()
@@ -90,6 +145,8 @@ def get_qreserve_user_map(site_id, headers):
         users = []
 
     email_to_user_id = {}
+    name_to_user_ids = {}
+
     for site_user in users:
         if not isinstance(site_user, dict):
             continue
@@ -100,11 +157,29 @@ def get_qreserve_user_map(site_id, headers):
 
         email = (user.get("email") or "").strip().lower()
         user_id = user.get("user_id") or user.get("id")
+        first, last = extract_first_last(user)
+        name_key = f"{normalize_name(first)} {normalize_name(last)}".strip() if first or last else ""
 
         if email and user_id:
             email_to_user_id[email] = user_id
 
-    return email_to_user_id
+        if name_key and user_id:
+            name_to_user_ids.setdefault(name_key, []).append(user_id)
+
+    return email_to_user_id, name_to_user_ids
+
+
+def get_canvas_user_name(canvas_headers, user_id, user_obj=None):
+    if isinstance(user_obj, dict):
+        first, last = extract_first_last(user_obj)
+        if first and last:
+            return first, last
+
+    profile_url = f"{CANVAS_BASE_URL}/users/{user_id}/profile"
+    res = requests.get(profile_url, headers=canvas_headers, timeout=30)
+    res.raise_for_status()
+    profile = res.json()
+    return extract_first_last(profile)
 
 
 def award_qreserve_credentials(qreserve_user_id, qreserve_headers):
@@ -142,8 +217,8 @@ def run_sync_pipeline():
     }
 
     try:
-        qreserve_user_map = get_qreserve_user_map(QRESERVE_SITE_ID, qreserve_headers)
-        print(f"DEBUG: QReserve map contains {len(qreserve_user_map)} users.")
+        qreserve_email_map, qreserve_name_map = get_qreserve_user_maps(QRESERVE_SITE_ID, qreserve_headers)
+        print(f"DEBUG: QReserve map contains {len(qreserve_email_map)} emails and {len(qreserve_name_map)} names.")
     except Exception as e:
         print(f"CRITICAL: Could not fetch QReserve user map. Details: {e}")
         return
@@ -205,16 +280,37 @@ def run_sync_pipeline():
 
             student_email = canvas_email_lookup.get(user_id, "")
 
+        first_name, last_name = get_canvas_user_name(canvas_headers, user_id, user_obj)
+
         if not student_email:
             print(f"    ↳ ERROR: Could not resolve email for Canvas user {user_id}.")
             continue
 
         print(f"    ↳ MATCH FOUND: Pushing {student_email} to QReserve.")
 
-        qreserve_user_id = qreserve_user_map.get(student_email.lower())
+        qreserve_user_id = qreserve_email_map.get(student_email.lower())
+        lookup_mode = "email"
+
+        if not qreserve_user_id and first_name and last_name:
+            name_key = f"{normalize_name(first_name)} {normalize_name(last_name)}".strip()
+            matches = qreserve_name_map.get(name_key, [])
+            if len(matches) == 1:
+                qreserve_user_id = matches[0]
+                lookup_mode = "name"
+                print(f"       EMAIL MISS: Falling back to QReserve name match for {first_name} {last_name}.")
+            elif len(matches) > 1:
+                print(f"       ERROR: Multiple QReserve users matched name {first_name} {last_name}; skipping.")
+                continue
+
         if not qreserve_user_id:
-            print(f"       ERROR: {student_email} not found in QReserve site users.")
+            if first_name and last_name:
+                print(f"       ERROR: {student_email} not found in QReserve site users by email or name ({first_name} {last_name}).")
+            else:
+                print(f"       ERROR: {student_email} not found in QReserve site users.")
             continue
+
+        if lookup_mode == "name":
+            print(f"       NAME MATCH FOUND: Pushing QReserve user {qreserve_user_id} to credentials.")
 
         if award_qreserve_credentials(qreserve_user_id, qreserve_headers):
             processed_count += 1
