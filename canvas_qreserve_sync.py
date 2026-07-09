@@ -1,3 +1,4 @@
+import json
 import os
 import re
 import requests
@@ -21,6 +22,7 @@ CANVAS_ACCESS_TOKEN = os.getenv("CANVAS_ACCESS_TOKEN")
 QRESERVE_BOT_TOKEN = os.getenv("QRESERVE_BOT_TOKEN")
 
 LOOKBACK_MINUTES = int(os.getenv("LOOKBACK_MINUTES", "360"))
+AWARD_CACHE_FILE = os.getenv("AWARD_CACHE_FILE", ".qreserve_award_cache.json")
 
 
 def require_env(value, name):
@@ -182,8 +184,108 @@ def get_canvas_user_name(canvas_headers, user_id, user_obj=None):
     return extract_first_last(profile)
 
 
-def award_qreserve_credentials(qreserve_user_id, qreserve_headers):
+def load_award_cache():
+    try:
+        with open(AWARD_CACHE_FILE, "r", encoding="utf-8") as fh:
+            payload = json.load(fh)
+        if isinstance(payload, dict):
+            return payload
+    except FileNotFoundError:
+        return {}
+    except Exception as e:
+        print(f"WARNING: Could not read award cache ({AWARD_CACHE_FILE}): {e}")
+    return {}
+
+
+def save_award_cache(cache):
+    try:
+        with open(AWARD_CACHE_FILE, "w", encoding="utf-8") as fh:
+            json.dump(cache, fh, indent=2, sort_keys=True)
+    except Exception as e:
+        print(f"WARNING: Could not write award cache ({AWARD_CACHE_FILE}): {e}")
+
+
+def cache_key(qreserve_user_id, credential_id):
+    return f"{qreserve_user_id}:{credential_id}"
+
+
+def get_qreserve_user_credentials(qreserve_user_id, qreserve_headers):
+    candidate_urls = [
+        f"https://api.qreserve.com/training/records?user_id={qreserve_user_id}",
+        f"https://api.qreserve.com/training/records?site_id={QRESERVE_SITE_ID}&user_id={qreserve_user_id}",
+        f"https://api.qreserve.com/users/{qreserve_user_id}/training_records",
+        f"https://api.qreserve.com/users/{qreserve_user_id}/credentials",
+    ]
+
+    credential_ids = set()
+
+    for url in candidate_urls:
+        try:
+            res = requests.get(url, headers=qreserve_headers, timeout=30)
+        except Exception:
+            continue
+
+        if res.status_code == 404:
+            continue
+        if res.status_code not in (200, 201):
+            continue
+
+        try:
+            payload = res.json()
+        except Exception:
+            continue
+
+        if isinstance(payload, dict):
+            records = (
+                payload.get("data")
+                or payload.get("records")
+                or payload.get("training_records")
+                or payload.get("credentials")
+                or payload.get("results")
+                or []
+            )
+        elif isinstance(payload, list):
+            records = payload
+        else:
+            records = []
+
+        for record in records:
+            if not isinstance(record, dict):
+                continue
+            for key in ("credential_id", "training_id", "credential", "id", "training_record_id"):
+                value = record.get(key)
+                if value:
+                    credential_ids.add(str(value))
+            nested = record.get("credential")
+            if isinstance(nested, dict):
+                for key in ("credential_id", "id"):
+                    value = nested.get(key)
+                    if value:
+                        credential_ids.add(str(value))
+
+        if credential_ids:
+            break
+
+    return credential_ids
+
+
+def user_already_has_credential(qreserve_user_id, credential_id, qreserve_headers, award_cache):
+    if credential_id in get_qreserve_user_credentials(qreserve_user_id, qreserve_headers):
+        award_cache[cache_key(qreserve_user_id, credential_id)] = {
+            "checked_at": datetime.now(timezone.utc).isoformat(),
+            "source": "qreserve",
+        }
+        return True
+
+    return cache_key(qreserve_user_id, credential_id) in award_cache
+
+
+def award_qreserve_credentials(qreserve_user_id, qreserve_headers, award_cache):
     for credential_id in QRESERVE_CREDENTIAL_IDS:
+        if user_already_has_credential(qreserve_user_id, credential_id, qreserve_headers, award_cache):
+            print(f"       SKIP: Credential {credential_id} already exists for QReserve user {qreserve_user_id}.")
+            continue
+
         qreserve_url = f"https://api.qreserve.com/training/record_add/{credential_id}"
 
         payload = {
@@ -199,6 +301,10 @@ def award_qreserve_credentials(qreserve_user_id, qreserve_headers):
             print(f"       FAILURE: {res.status_code} {res.text[:200]}")
             return False
 
+        award_cache[cache_key(qreserve_user_id, credential_id)] = {
+            "awarded_at": datetime.now(timezone.utc).isoformat(),
+            "source": "script",
+        }
         print(f"       SUCCESS: Granted credential {credential_id} to QReserve user {qreserve_user_id}!")
 
     return True
@@ -242,6 +348,7 @@ def run_sync_pipeline():
     canvas_email_lookup = {}
     time_window = datetime.now(timezone.utc) - timedelta(minutes=LOOKBACK_MINUTES)
 
+    award_cache = load_award_cache()
     processed_count = 0
 
     for sub in submissions:
@@ -312,9 +419,11 @@ def run_sync_pipeline():
         if lookup_mode == "name":
             print(f"       NAME MATCH FOUND: Pushing QReserve user {qreserve_user_id} to credentials.")
 
-        if award_qreserve_credentials(qreserve_user_id, qreserve_headers):
+        if award_qreserve_credentials(qreserve_user_id, qreserve_headers, award_cache):
             processed_count += 1
+            save_award_cache(award_cache)
 
+    save_award_cache(award_cache)
     print(f"Sync complete. Processed {processed_count} passing submissions.")
 
 
