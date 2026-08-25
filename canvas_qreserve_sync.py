@@ -23,6 +23,7 @@ QRESERVE_BOT_TOKEN = os.getenv("QRESERVE_BOT_TOKEN")
 
 LOOKBACK_MINUTES = int(os.getenv("LOOKBACK_MINUTES", "2880"))
 AWARD_CACHE_FILE = os.getenv("AWARD_CACHE_FILE", ".qreserve_award_cache.json")
+PASSING_SCORE = float(os.getenv("PASSING_SCORE", "120"))
 
 
 def require_env(value, name):
@@ -209,6 +210,21 @@ def cache_key(qreserve_user_id, credential_id):
     return f"{qreserve_user_id}:{credential_id}"
 
 
+def parse_score(value):
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def is_full_credit_score(score):
+    parsed_score = parse_score(score)
+    if parsed_score is None:
+        return False
+
+    return parsed_score >= PASSING_SCORE
+
+
 def get_qreserve_user_credentials(qreserve_user_id, qreserve_headers):
     candidate_urls = [
         f"https://api.qreserve.com/training/records?user_id={qreserve_user_id}",
@@ -358,15 +374,25 @@ def run_sync_pipeline():
 
         print(f" -> Inspecting Submission ID {sub.get('id')} (User: {user_id}, Score: {score}, State: {workflow})")
 
-        if workflow != "complete" or score != 100.0:
+        if workflow != "complete":
+            print(f"    SKIP: Submission is not complete yet; state is {workflow}.")
+            continue
+
+        if not is_full_credit_score(score):
+            print(f"    SKIP: Score {score} is below passing score {PASSING_SCORE}.")
             continue
 
         finished_at_str = sub.get("finished_at")
         if not finished_at_str:
+            print("    SKIP: Canvas submission has no finished_at timestamp.")
             continue
 
         finished_at = datetime.fromisoformat(finished_at_str.replace("Z", "+00:00"))
         if finished_at <= time_window:
+            print(
+                f"    SKIP: Submission finished at {finished_at.isoformat()}, "
+                f"outside LOOKBACK_MINUTES={LOOKBACK_MINUTES}."
+            )
             continue
 
         user_obj = sub.get("user", {}) or {}
